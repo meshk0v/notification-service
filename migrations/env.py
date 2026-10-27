@@ -8,7 +8,10 @@ from app.infrastructure.config import settings
 from app.infrastructure.database import Base
 from app.modules.users.models import User  # noqa: F401
 from app.modules.tags.models import Tag  # noqa: F401
-from app.modules.groups.models import Group  # noqa: F401
+from app.modules.groups.models import Group  # noqa: F401j
+from app.modules.users.models import User  # noqa: F401
+from app.modules.templates.models import MessageTemplate  # noqa: F401
+from app.modules.campaigns.models import Campaign  # noqa: F401
 
 config = context.config
 
