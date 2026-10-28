@@ -12,6 +12,8 @@ from app.modules.groups.models import Group  # noqa: F401j
 from app.modules.users.models import User  # noqa: F401
 from app.modules.templates.models import MessageTemplate  # noqa: F401
 from app.modules.campaigns.models import Campaign  # noqa: F401
+from app.modules.notifications.models import Notification  # noqa: F401
+from app.modules.outbox.models import OutboxEvent  # noqa: F401
 
 config = context.config
 

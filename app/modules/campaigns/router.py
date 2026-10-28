@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.infrastructure.database import get_db
-from app.modules.campaigns.models import Campaign
+from app.modules.campaigns.models import Campaign, campaign_users
 from app.modules.campaigns.schemas import (
     CampaignCreate,
     CampaignUpdate,
@@ -14,6 +15,9 @@ from app.modules.groups.models import Group
 from app.modules.tags.models import Tag
 from app.modules.templates.models import MessageTemplate
 from app.modules.users.models import User
+from app.modules.notifications.models import Notification
+from app.modules.outbox.models import OutboxEvent
+
 
 
 router = APIRouter(prefix="/campaigns", tags=["Campaigns"])
@@ -258,3 +262,136 @@ def preview_campaign(
         unavailable_recipients=unavailable_recipients,
         sample_message=sample_message,
     )
+
+
+@router.post("/{campaign_id}/launch")
+def launch_campaign(
+    campaign_id: int,
+    db: Session = Depends(get_db),
+):
+    campaign = db.scalar(
+        select(Campaign)
+        .where(Campaign.id == campaign_id)
+        .with_for_update()
+    )
+
+    if campaign is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Campaign not found",
+        )
+
+    if campaign.status not in {"draft", "scheduled"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Campaign cannot be launched from status: {campaign.status}",
+        )
+
+    statement = select(User).where(User.is_active.is_(True))
+
+    if campaign.target_type == "group":
+        statement = (
+            statement
+            .join(User.tags)
+            .join(Tag.groups)
+            .where(Group.id == campaign.group_id)
+            .distinct()
+        )
+
+    elif campaign.target_type == "individual":
+        statement = (
+            statement
+            .join(
+                campaign_users,
+                campaign_users.c.user_id == User.id,
+            )
+            .where(campaign_users.c.campaign_id == campaign.id)
+        )
+
+    users = db.scalars(statement.order_by(User.id)).all()
+
+    notification_rows = []
+
+    for user in users:
+        for channel in campaign.channels:
+            if channel == "telegram":
+                available = (
+                    user.telegram_available
+                    and user.telegram_id is not None
+                )
+
+            elif channel == "email":
+                available = (
+                    user.email_available
+                    and user.email is not None
+                )
+
+            else:
+                available = False
+
+            if not available:
+                continue
+
+            notification_rows.append({
+                "campaign_id": campaign.id,
+                "user_id": user.id,
+                "channel": channel,
+                "status": "pending",
+                "attempts": 0,
+                "max_attempts": 5,
+            })
+
+    try:
+        created_notifications = []
+
+        if notification_rows:
+            notification_statement = (
+                pg_insert(Notification)
+                .values(notification_rows)
+                .on_conflict_do_nothing(
+                    constraint="uq_notification_campaign_user_channel"
+                )
+                .returning(
+                    Notification.id,
+                    Notification.channel,
+                )
+            )
+
+            created_notifications = (
+                db.execute(notification_statement)
+                .mappings()
+                .all()
+            )
+
+        outbox_rows = [
+            {
+                "event_type": "notification.created",
+                "payload": {
+                    "notification_id": notification["id"],
+                    "channel": notification["channel"],
+                },
+                "status": "pending",
+            }
+            for notification in created_notifications
+        ]
+
+        if outbox_rows:
+            db.execute(
+                pg_insert(OutboxEvent).values(outbox_rows)
+            )
+
+        campaign.status = "processing"
+
+        db.commit()
+
+    except Exception:
+        db.rollback()
+        raise
+
+    return {
+        "campaign_id": campaign.id,
+        "status": campaign.status,
+        "recipients_found": len(users),
+        "deliveries_created": len(created_notifications),
+        "outbox_events_created": len(outbox_rows),
+    }
