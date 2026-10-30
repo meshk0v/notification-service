@@ -9,6 +9,7 @@ from app.modules.tags.models import Tag
 from app.modules.users.models import User
 from app.modules.groups.schemas import (
     GroupCreate,
+    GroupUpdate,
     GroupResponse,
     UserInGroup,
 )
@@ -68,6 +69,72 @@ def get_groups(db: Session = Depends(get_db)):
     )
 
     return db.scalars(statement).all()
+
+
+@router.patch("/{group_id}", response_model=GroupResponse)
+def update_group(
+    group_id: int,
+    group_data: GroupUpdate,
+    db: Session = Depends(get_db),
+):
+    group = db.get(Group, group_id)
+
+    if group is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Group not found",
+        )
+
+    update_data = group_data.model_dump(exclude_unset=True)
+
+    if "tag_ids" in update_data:
+        tag_ids = update_data.pop("tag_ids") or []
+        tags = db.scalars(
+            select(Tag).where(Tag.id.in_(tag_ids))
+        ).all()
+
+        if len(tags) != len(set(tag_ids)):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="One or more tags not found",
+            )
+
+        group.tags = tags
+
+    if update_data.get("name") is None:
+        update_data.pop("name", None)
+
+    for field, value in update_data.items():
+        setattr(group, field, value)
+
+    try:
+        db.commit()
+        db.refresh(group)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Group with this name already exists",
+        )
+
+    return group
+
+
+@router.delete("/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_group(
+    group_id: int,
+    db: Session = Depends(get_db),
+):
+    group = db.get(Group, group_id)
+
+    if group is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Group not found",
+        )
+
+    db.delete(group)
+    db.commit()
 
 
 @router.get("/{group_id}/users", response_model=list[UserInGroup])

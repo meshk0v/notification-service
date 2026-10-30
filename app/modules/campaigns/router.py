@@ -1,58 +1,43 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.infrastructure.database import get_db
-from app.modules.campaigns.models import Campaign, campaign_users
+from app.modules.campaigns import constants as campaign_status
+from app.modules.campaigns.models import Campaign
 from app.modules.campaigns.schemas import (
     CampaignCreate,
     CampaignUpdate,
     CampaignResponse,
     CampaignPreview,
+    CampaignStats,
+    DeliveriesPage,
+    LaunchResult,
+)
+from app.modules.campaigns.service import (
+    build_campaign_preview,
+    launch_campaign_deliveries,
 )
 from app.modules.groups.models import Group
-from app.modules.tags.models import Tag
+from app.modules.notifications import constants as delivery_status
+from app.modules.notifications.models import Notification
 from app.modules.templates.models import MessageTemplate
 from app.modules.users.models import User
-from app.modules.notifications.models import Notification
-from app.modules.outbox.models import OutboxEvent
-
 
 
 router = APIRouter(prefix="/campaigns", tags=["Campaigns"])
 
 
-def get_campaign_audience(campaign: Campaign, db: Session):
-    """
-    Возвращает пользователей, подходящих под аудиторию кампании.
-    """
+def get_campaign_or_404(db: Session, campaign_id: int) -> Campaign:
+    campaign = db.get(Campaign, campaign_id)
 
-    statement = select(User).where(User.is_active.is_(True))
-
-    if campaign.target_type == "group":
-        statement = (
-            statement
-            .join(User.tags)
-            .join(Tag.groups)
-            .where(Group.id == campaign.group_id)
-            .distinct()
+    if campaign is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Campaign not found",
         )
 
-    elif campaign.target_type == "individual":
-        statement = statement.where(
-            User.id.in_(
-                select(
-                    CampaignUser.user_id
-                ).where(
-                    CampaignUser.campaign_id == campaign.id
-                )
-            )
-        )
-
-    statement = statement.order_by(User.id)
-
-    return db.scalars(statement).all()
+    return campaign
 
 
 @router.post(
@@ -71,7 +56,7 @@ def create_campaign(
 
         if template is None:
             raise HTTPException(
-                status_code=404,
+                status_code=status.HTTP_404_NOT_FOUND,
                 detail="Template not found",
             )
 
@@ -83,7 +68,7 @@ def create_campaign(
 
         if group is None:
             raise HTTPException(
-                status_code=404,
+                status_code=status.HTTP_404_NOT_FOUND,
                 detail="Group not found",
             )
 
@@ -99,7 +84,7 @@ def create_campaign(
 
         if len(selected_users) != len(set(data.user_ids)):
             raise HTTPException(
-                status_code=404,
+                status_code=status.HTTP_404_NOT_FOUND,
                 detail="One or more active users not found",
             )
 
@@ -111,7 +96,11 @@ def create_campaign(
         group_id=data.group_id,
         channels=list(data.channels),
         scheduled_at=data.scheduled_at,
-        status="scheduled" if data.scheduled_at else "draft",
+        status=(
+            campaign_status.SCHEDULED
+            if data.scheduled_at
+            else campaign_status.DRAFT
+        ),
         target_users=selected_users,
     )
 
@@ -134,15 +123,7 @@ def get_campaign(
     campaign_id: int,
     db: Session = Depends(get_db),
 ):
-    campaign = db.get(Campaign, campaign_id)
-
-    if campaign is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Campaign not found",
-        )
-
-    return campaign
+    return get_campaign_or_404(db, campaign_id)
 
 
 @router.patch("/{campaign_id}", response_model=CampaignResponse)
@@ -151,17 +132,11 @@ def update_campaign(
     data: CampaignUpdate,
     db: Session = Depends(get_db),
 ):
-    campaign = db.get(Campaign, campaign_id)
+    campaign = get_campaign_or_404(db, campaign_id)
 
-    if campaign is None:
+    if campaign.status not in campaign_status.EDITABLE_STATUSES:
         raise HTTPException(
-            status_code=404,
-            detail="Campaign not found",
-        )
-
-    if campaign.status not in {"draft", "scheduled"}:
-        raise HTTPException(
-            status_code=409,
+            status_code=status.HTTP_409_CONFLICT,
             detail="Only draft or scheduled campaigns can be edited",
         )
 
@@ -172,7 +147,7 @@ def update_campaign(
 
         if template is None:
             raise HTTPException(
-                status_code=404,
+                status_code=status.HTTP_404_NOT_FOUND,
                 detail="Template not found",
             )
 
@@ -188,83 +163,17 @@ def update_campaign(
     return campaign
 
 
-@router.get(
-    "/{campaign_id}/preview",
-    response_model=CampaignPreview,
-)
+@router.get("/{campaign_id}/preview", response_model=CampaignPreview)
 def preview_campaign(
     campaign_id: int,
     db: Session = Depends(get_db),
 ):
-    campaign = db.get(Campaign, campaign_id)
+    campaign = get_campaign_or_404(db, campaign_id)
 
-    if campaign is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Campaign not found",
-        )
-
-    users = get_campaign_audience(campaign, db)
-
-    telegram_recipients = 0
-    email_recipients = 0
-    unavailable_recipients = 0
-
-    for user in users:
-        telegram_available = (
-            user.telegram_available and user.telegram_id is not None
-        )
-
-        email_available = (
-            user.email_available and user.email is not None
-        )
-
-        if "telegram" in campaign.channels and telegram_available:
-            telegram_recipients += 1
-
-        if "email" in campaign.channels and email_available:
-            email_recipients += 1
-
-        if (
-            ("telegram" in campaign.channels and not telegram_available)
-            and ("email" in campaign.channels and not email_available)
-        ):
-            unavailable_recipients += 1
-
-        elif (
-            len(campaign.channels) == 1
-            and (
-                ("telegram" in campaign.channels and not telegram_available)
-                or ("email" in campaign.channels and not email_available)
-            )
-        ):
-            unavailable_recipients += 1
-
-    sample_message = None
-
-    if users:
-        sample_message = campaign.message.replace(
-            "{name}",
-            users[0].name,
-        )
-
-        if users[0].email:
-            sample_message = sample_message.replace(
-                "{email}",
-                users[0].email,
-            )
-
-    return CampaignPreview(
-        campaign_id=campaign.id,
-        total_recipients=len(users),
-        telegram_recipients=telegram_recipients,
-        email_recipients=email_recipients,
-        unavailable_recipients=unavailable_recipients,
-        sample_message=sample_message,
-    )
+    return build_campaign_preview(campaign, db)
 
 
-@router.post("/{campaign_id}/launch")
+@router.post("/{campaign_id}/launch", response_model=LaunchResult)
 def launch_campaign(
     campaign_id: int,
     db: Session = Depends(get_db),
@@ -277,121 +186,109 @@ def launch_campaign(
 
     if campaign is None:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Campaign not found",
         )
 
-    if campaign.status not in {"draft", "scheduled"}:
+    if campaign.status not in campaign_status.EDITABLE_STATUSES:
         raise HTTPException(
-            status_code=409,
+            status_code=status.HTTP_409_CONFLICT,
             detail=f"Campaign cannot be launched from status: {campaign.status}",
         )
 
-    statement = select(User).where(User.is_active.is_(True))
-
-    if campaign.target_type == "group":
-        statement = (
-            statement
-            .join(User.tags)
-            .join(Tag.groups)
-            .where(Group.id == campaign.group_id)
-            .distinct()
-        )
-
-    elif campaign.target_type == "individual":
-        statement = (
-            statement
-            .join(
-                campaign_users,
-                campaign_users.c.user_id == User.id,
-            )
-            .where(campaign_users.c.campaign_id == campaign.id)
-        )
-
-    users = db.scalars(statement.order_by(User.id)).all()
-
-    notification_rows = []
-
-    for user in users:
-        for channel in campaign.channels:
-            if channel == "telegram":
-                available = (
-                    user.telegram_available
-                    and user.telegram_id is not None
-                )
-
-            elif channel == "email":
-                available = (
-                    user.email_available
-                    and user.email is not None
-                )
-
-            else:
-                available = False
-
-            if not available:
-                continue
-
-            notification_rows.append({
-                "campaign_id": campaign.id,
-                "user_id": user.id,
-                "channel": channel,
-                "status": "pending",
-                "attempts": 0,
-                "max_attempts": 5,
-            })
-
     try:
-        created_notifications = []
-
-        if notification_rows:
-            notification_statement = (
-                pg_insert(Notification)
-                .values(notification_rows)
-                .on_conflict_do_nothing(
-                    constraint="uq_notification_campaign_user_channel"
-                )
-                .returning(
-                    Notification.id,
-                    Notification.channel,
-                )
-            )
-
-            created_notifications = (
-                db.execute(notification_statement)
-                .mappings()
-                .all()
-            )
-
-        outbox_rows = [
-            {
-                "event_type": "notification.created",
-                "payload": {
-                    "notification_id": notification["id"],
-                    "channel": notification["channel"],
-                },
-                "status": "pending",
-            }
-            for notification in created_notifications
-        ]
-
-        if outbox_rows:
-            db.execute(
-                pg_insert(OutboxEvent).values(outbox_rows)
-            )
-
-        campaign.status = "processing"
-
+        result = launch_campaign_deliveries(campaign, db)
         db.commit()
-
     except Exception:
         db.rollback()
         raise
 
+    return result
+
+
+@router.get("/{campaign_id}/stats", response_model=CampaignStats)
+def get_campaign_stats(
+    campaign_id: int,
+    db: Session = Depends(get_db),
+):
+    campaign = get_campaign_or_404(db, campaign_id)
+
+    status_rows = db.execute(
+        select(Notification.status, func.count(Notification.id))
+        .where(Notification.campaign_id == campaign_id)
+        .group_by(Notification.status)
+    ).all()
+    counts = dict(status_rows)
+
+    channel_rows = db.execute(
+        select(Notification.channel, func.count(Notification.id))
+        .where(Notification.campaign_id == campaign_id)
+        .group_by(Notification.channel)
+    ).all()
+
     return {
-        "campaign_id": campaign.id,
-        "status": campaign.status,
-        "recipients_found": len(users),
-        "deliveries_created": len(created_notifications),
-        "outbox_events_created": len(outbox_rows),
+        "campaign_id": campaign_id,
+        "campaign_status": campaign.status,
+        "total": sum(counts.values()),
+        "queued": counts.get(delivery_status.PENDING, 0),
+        "in_progress": counts.get(delivery_status.PROCESSING, 0),
+        "sent": counts.get(delivery_status.SENT, 0),
+        "failed": counts.get(delivery_status.FAILED, 0),
+        "canceled": counts.get(delivery_status.CANCELED, 0),
+        "channels": dict(channel_rows),
+    }
+
+
+@router.get("/{campaign_id}/deliveries", response_model=DeliveriesPage)
+def get_campaign_deliveries(
+    campaign_id: int,
+    db: Session = Depends(get_db),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    delivery_status_filter: str | None = Query(default=None, alias="status"),
+    channel: str | None = Query(default=None),
+):
+    get_campaign_or_404(db, campaign_id)
+
+    filters = [Notification.campaign_id == campaign_id]
+
+    if delivery_status_filter:
+        filters.append(Notification.status == delivery_status_filter)
+
+    if channel:
+        filters.append(Notification.channel == channel)
+
+    total = db.scalar(
+        select(func.count(Notification.id)).where(*filters)
+    )
+
+    rows = db.execute(
+        select(Notification, User.name, User.email)
+        .join(User, User.id == Notification.user_id)
+        .where(*filters)
+        .order_by(Notification.id.desc())
+        .limit(limit)
+        .offset(offset)
+    ).all()
+
+    return {
+        "campaign_id": campaign_id,
+        "total": total or 0,
+        "limit": limit,
+        "offset": offset,
+        "deliveries": [
+            {
+                "notification_id": notification.id,
+                "user_id": notification.user_id,
+                "user_name": user_name,
+                "user_email": user_email,
+                "channel": notification.channel,
+                "status": notification.status,
+                "attempts": notification.attempts,
+                "error_message": notification.error_message,
+                "sent_at": notification.sent_at,
+                "created_at": notification.created_at,
+            }
+            for notification, user_name, user_email in rows
+        ],
     }

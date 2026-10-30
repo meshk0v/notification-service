@@ -43,6 +43,27 @@ services:
     ports:
       - "6379:6379"
 
+  worker:
+    build: .
+    container_name: notification_worker
+    command: >
+      celery -A workers.celery_app:celery_app
+      worker
+      --loglevel=info
+      --concurrency=2
+      --without-gossip
+      --without-mingle
+      -Q telegram_queue,email_queue
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+
 volumes:
   postgres_data:
   

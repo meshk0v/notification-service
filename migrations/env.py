@@ -14,6 +14,7 @@ from app.modules.templates.models import MessageTemplate  # noqa: F401
 from app.modules.campaigns.models import Campaign  # noqa: F401
 from app.modules.notifications.models import Notification  # noqa: F401
 from app.modules.outbox.models import OutboxEvent  # noqa: F401
+from app.modules.auth.models import Employee
 
 config = context.config
 

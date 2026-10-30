@@ -14,6 +14,12 @@ class GroupCreate(BaseModel):
     tag_ids: list[int]
 
 
+class GroupUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    tag_ids: list[int] | None = None
+
+
 class GroupResponse(BaseModel):
     id: int
     name: str

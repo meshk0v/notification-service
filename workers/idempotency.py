@@ -5,6 +5,7 @@ from sqlalchemy import func, or_, select, update
 
 from app.infrastructure.database import SessionLocal
 from app.modules.notifications.models import Notification
+from app.modules.campaigns.service import refresh_campaign_status
 
 def claim_notification(notification_id: int) -> bool:
     """
@@ -58,9 +59,14 @@ def mark_notification_sent(notification_id: int) -> None:
                 updated_at=func.now(),
                 processing_started_at=None,
             )
+            .returning(Notification.campaign_id)
         )
 
-        db.execute(statement)
+        campaign_id = db.scalar(statement)
+
+        if campaign_id is not None:
+            refresh_campaign_status(db, campaign_id)
+
         db.commit()
 
 
@@ -101,5 +107,10 @@ def mark_notification_failed(
                 datetime.now(timezone.utc)
                 + timedelta(seconds=delay)
             )
+
+        refresh_campaign_status(
+            db,
+            notification.campaign_id,
+        )
 
         db.commit()

@@ -87,7 +87,7 @@ def remove_tag_from_user(
     if tag is None:
         raise HTTPException(status_code=404, detail="Tag not found")
 
-    if user is None:
+    if user is None or not user.is_active:
         raise HTTPException(status_code=404, detail="User not found")
 
     if tag in user.tags:

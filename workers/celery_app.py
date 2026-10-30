@@ -57,3 +57,5 @@ celery_app.conf.update(
     # Сохранять сообщения в очереди при перезапуске RabbitMQ
     task_default_delivery_mode=2,
 )
+
+celery_app.conf.worker_enable_remote_control=False

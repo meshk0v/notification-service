@@ -18,6 +18,13 @@ class UserUpdate(BaseModel):
     is_active: bool | None = None
 
 
+class UserTag(BaseModel):
+    id: int
+    name: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class UserResponse(BaseModel):
     id: int
     name: str
@@ -27,5 +34,6 @@ class UserResponse(BaseModel):
     telegram_available: bool
     is_active: bool
     created_at: datetime
+    tags: list[UserTag] = []
 
     model_config = ConfigDict(from_attributes=True)

@@ -7,6 +7,8 @@ from app.infrastructure.database import SessionLocal
 from app.modules.notifications.models import Notification
 from app.modules.users.models import User
 from app.modules.campaigns.models import Campaign
+from app.modules.tags.models import Tag
+from app.modules.groups.models import Group
 
 from app.providers.telegram import send_telegram_message
 from app.providers.email import send_email_message

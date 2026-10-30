@@ -81,3 +81,43 @@ class CampaignPreview(BaseModel):
     email_recipients: int
     unavailable_recipients: int
     sample_message: str | None
+
+class CampaignStats(BaseModel):
+    campaign_id: int
+    campaign_status: str
+    total: int
+    queued: int
+    in_progress: int
+    sent: int
+    failed: int
+    canceled: int
+    channels: dict[str, int]
+
+
+class LaunchResult(BaseModel):
+    campaign_id: int
+    status: str
+    recipients_found: int
+    deliveries_created: int
+    outbox_events_created: int
+
+
+class DeliveryItem(BaseModel):
+    notification_id: int
+    user_id: int
+    user_name: str
+    user_email: str | None
+    channel: str
+    status: str
+    attempts: int
+    error_message: str | None
+    sent_at: datetime | None
+    created_at: datetime
+
+
+class DeliveriesPage(BaseModel):
+    campaign_id: int
+    total: int
+    limit: int
+    offset: int
+    deliveries: list[DeliveryItem]

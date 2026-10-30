@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.infrastructure.database import get_db
 from app.modules.users.models import User
@@ -46,6 +46,7 @@ def create_user(
 
 @router.get("/", response_model=list[UserResponse])
 def get_users(
+    response: Response,
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
@@ -58,10 +59,18 @@ def get_users(
 
     statement = (
         select(User)
+        .options(selectinload(User.tags))
         .where(User.is_active == True)
         .offset(skip)
         .limit(limit)
         .order_by(User.id)
+    )
+
+    # общее число активных пользователей; тело ответа остаётся списком
+    response.headers["X-Total-Count"] = str(
+        db.scalar(
+            select(func.count(User.id)).where(User.is_active.is_(True))
+        )
     )
 
     return db.scalars(statement).all()
