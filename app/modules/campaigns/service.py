@@ -166,6 +166,9 @@ def refresh_campaign_status(db, campaign_id: int) -> None:
     Вызывается внутри транзакции, которая изменяет доставку.
     """
 
+    # сессия без autoflush: без этого запрос ниже не увидит изменённый статус
+    db.flush()
+
     campaign = db.scalar(
         select(Campaign)
         .where(Campaign.id == campaign_id)

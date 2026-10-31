@@ -13,6 +13,8 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.infrastructure.database import Base
+from app.modules.groups.models import Group  # noqa: F401
+from app.modules.templates.models import MessageTemplate  # noqa: F401
 from app.modules.users.models import User
 
 

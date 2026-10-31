@@ -1,4 +1,6 @@
 
+import logging
+
 from celery import Celery
 from kombu import Queue
 
@@ -59,3 +61,6 @@ celery_app.conf.update(
 )
 
 celery_app.conf.worker_enable_remote_control=False
+
+# httpx пишет полный URL запроса на INFO, а в нём токен Telegram-бота
+logging.getLogger("httpx").setLevel(logging.WARNING)

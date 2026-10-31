@@ -11,7 +11,7 @@ services:
         condition: service_healthy
     env_file:
       - .env
-    command: uvicorn app.main:app --host 0.0.0 --port 8000 --reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   postgres:
     image: postgres:17
@@ -64,6 +64,33 @@ services:
       rabbitmq:
         condition: service_started
 
+  outbox_publisher:
+    build: .
+    container_name: notification_outbox_publisher
+    command: python -m workers.outbox_publisher
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+
+  recovery:
+    build: .
+    container_name: notification_recovery
+    command: sh -c "while true; do python -m workers.recovery; sleep 60; done"
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   postgres_data:
-  

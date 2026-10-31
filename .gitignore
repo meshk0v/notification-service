@@ -39,3 +39,11 @@ Thumbs.db
 # Temporary files
 tmp/
 temp/
+
+# Keys and certificates
+*.pem
+*.key
+
+# Node
+node_modules/
+*.tsbuildinfo
